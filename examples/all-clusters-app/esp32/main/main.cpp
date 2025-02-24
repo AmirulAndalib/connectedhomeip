@@ -33,7 +33,6 @@
 #include "nvs_flash.h"
 #include "platform/PlatformManager.h"
 #include "shell_extension/launch.h"
-#include <app/server/OnboardingCodesUtil.h>
 #include <app/util/endpoint-config-api.h>
 #include <binding-handler.h>
 #include <common/CHIPDeviceManager.h>
@@ -42,6 +41,7 @@
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <credentials/examples/DeviceAttestationCredsExample.h>
 #include <platform/ESP32/ESP32Utils.h>
+#include <setup_payload/OnboardingCodesUtil.h>
 #include <static-supported-modes-manager.h>
 #include <static-supported-temperature-levels.h>
 
@@ -212,8 +212,6 @@ extern "C" void app_main()
     }
 
     chip::DeviceLayer::PlatformMgr().ScheduleWork(InitServer, reinterpret_cast<intptr_t>(nullptr));
-
-    ESPOpenThreadInit();
 }
 
 bool lowPowerClusterSleep()

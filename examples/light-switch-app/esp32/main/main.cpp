@@ -31,10 +31,10 @@
 #include "nvs_flash.h"
 #include "shell_extension/launch.h"
 
-#include <app/server/OnboardingCodesUtil.h>
 #include <credentials/DeviceAttestationCredsProvider.h>
 #include <credentials/examples/DeviceAttestationCredsExample.h>
 #include <platform/ESP32/ESP32Utils.h>
+#include <setup_payload/OnboardingCodesUtil.h>
 
 #if CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER
 #include <platform/ESP32/ESP32FactoryDataProvider.h>
@@ -137,8 +137,6 @@ extern "C" void app_main()
 #endif // CONFIG_ENABLE_ESP32_FACTORY_DATA_PROVIDER
 
     chip::DeviceLayer::PlatformMgr().ScheduleWork(InitServer, reinterpret_cast<intptr_t>(nullptr));
-
-    ESPOpenThreadInit();
 
     error = GetAppTask().StartAppTask();
     if (error != CHIP_NO_ERROR)
