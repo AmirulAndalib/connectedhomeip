@@ -1,1 +1,1 @@
-97 : [Telink] Update Docker image (Zephyr update)
+119 : [vscode/java/android] Install JDK 11 in vscode image (java path already set to it)

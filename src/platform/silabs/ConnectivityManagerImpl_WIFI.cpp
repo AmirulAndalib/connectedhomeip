@@ -128,8 +128,7 @@ ConnectivityManager::WiFiStationMode ConnectivityManagerImpl::_GetWiFiStationMod
 {
     if (mWiFiStationMode != kWiFiStationMode_ApplicationControlled)
     {
-        wifi_mode_t curWiFiMode = wfx_get_wifi_mode();
-        if ((curWiFiMode == WIFI_MODE_STA) || (curWiFiMode == WIFI_MODE_APSTA))
+        if (IsStationModeEnabled())
         {
             mWiFiStationMode = kWiFiStationMode_Enabled;
         }
@@ -138,17 +137,13 @@ ConnectivityManager::WiFiStationMode ConnectivityManagerImpl::_GetWiFiStationMod
             mWiFiStationMode = kWiFiStationMode_Disabled;
         }
     }
+
     return mWiFiStationMode;
 }
 
 bool ConnectivityManagerImpl::_IsWiFiStationProvisioned(void)
 {
-    wfx_wifi_provision_t wifiConfig;
-    if (wfx_get_wifi_provision(&wifiConfig))
-    {
-        return (wifiConfig.ssid[0] != 0);
-    }
-    return false;
+    return IsWifiProvisioned();
 }
 
 bool ConnectivityManagerImpl::_IsWiFiStationEnabled(void)
@@ -181,7 +176,7 @@ void ConnectivityManagerImpl::_ClearWiFiStationProvision(void)
 {
     if (mWiFiStationMode != kWiFiStationMode_ApplicationControlled)
     {
-        wfx_clear_wifi_provision();
+        ClearWifiCredentials();
 
         DeviceLayer::SystemLayer().ScheduleWork(DriveStationState, NULL);
     }
@@ -259,14 +254,9 @@ void ConnectivityManagerImpl::DriveStationState()
             (mWiFiStationMode != kWiFiStationMode_Enabled && !IsWiFiStationProvisioned()))
         {
             ChipLogProgress(DeviceLayer, "Disconnecting WiFi station interface");
-            sl_status_t status = sl_matter_wifi_disconnect();
-            if (status != SL_STATUS_OK)
-            {
-                ChipLogError(DeviceLayer, "wfx_wifi_disconnect() failed: %lx", status);
 
-                // TODO: Clean the function up to remove the usage of goto
-                goto exit;
-            }
+            CHIP_ERROR error = TriggerDisconnection();
+            SuccessOrExitAction(error, ChipLogError(DeviceLayer, "TriggerDisconnection() failed: %s", ErrorStr(error)));
 
             ChangeWiFiStationState(kWiFiStationState_Disconnecting);
         }
@@ -309,14 +299,7 @@ void ConnectivityManagerImpl::DriveStationState()
                 if (mWiFiStationState != kWiFiStationState_Connecting)
                 {
                     ChipLogProgress(DeviceLayer, "Attempting to connect WiFi");
-
-                    sl_status_t status = wfx_connect_to_ap();
-                    if (status != SL_STATUS_OK)
-                    {
-                        ChipLogError(DeviceLayer, "wfx_connect_to_ap() failed: %" PRId32, status);
-                        // TODO: Clean the function up to remove the usage of goto
-                        goto exit;
-                    }
+                    SuccessOrExitAction(ConnectToAccessPoint(), ChipLogError(DeviceLayer, "ConnectToAccessPoint() failed"));
 
                     ChangeWiFiStationState(kWiFiStationState_Connecting);
                 }
@@ -344,7 +327,6 @@ exit:
 
 void ConnectivityManagerImpl::OnStationConnected()
 {
-    wfx_setup_ip6_link_local(SL_WFX_STA_INTERFACE);
     NetworkCommissioning::SlWiFiDriver::GetInstance().OnConnectWiFiNetwork();
 
     UpdateInternetConnectivityState();
@@ -394,9 +376,9 @@ void ConnectivityManagerImpl::UpdateInternetConnectivityState(void)
     if (mWiFiStationState == kWiFiStationState_Connected)
     {
 #if CHIP_DEVICE_CONFIG_ENABLE_IPV4
-        haveIPv4Conn = wfx_have_ipv4_addr(SL_WFX_STA_INTERFACE);
+        haveIPv4Conn = HasAnIPv4Address();
 #endif /* CHIP_DEVICE_CONFIG_ENABLE_IPV4 */
-        haveIPv6Conn = wfx_have_ipv6_addr(SL_WFX_STA_INTERFACE);
+        haveIPv6Conn = HasAnIPv6Address();
     }
 
     // If the internet connectivity state has changed...

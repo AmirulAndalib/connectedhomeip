@@ -15,8 +15,6 @@
  *    limitations under the License.
  */
 
-// SL MATTER WI-FI INTERFACE
-
 #include "silabs_utils.h"
 #include <app/icd/server/ICDServerConfig.h>
 #include <lib/support/CHIPMem.h>
@@ -24,15 +22,17 @@
 #include <lib/support/TypeTraits.h>
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/silabs/wifi/WifiInterface.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+#include <platform/silabs/wifi/icd/WifiSleepManager.h>
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 
 using namespace chip;
 using namespace chip::DeviceLayer;
 
 #define CONVERT_SEC_TO_MS(TimeInS) (TimeInS * 1000)
+
+// TODO: We shouldn't need to have access to a global variable in the interface here
+extern WfxRsi_t wfx_rsi;
 
 // TODO: This is a workaround because we depend on the platform lib which depends on the platform implementation.
 //       As such we can't depend on the platform here as well
@@ -45,36 +45,40 @@ constexpr uint8_t kWlanMaxRetryIntervalsInSec = 60;
 uint8_t retryInterval                         = kWlanMinRetryIntervalsInSec;
 osTimerId_t sRetryTimer;
 
+bool hasNotifiedIPV6 = false;
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+bool hasNotifiedIPV4 = false;
+#endif /* CHIP_DEVICE_CONFIG_ENABLE_IPV4 */
+
 /*
  * Notifications to the upper-layer
  * All done in the context of the RSI/WiFi task (rsi_if.c)
  */
 void RetryConnectionTimerHandler(void * arg)
 {
-#if CHIP_CONFIG_ENABLE_ICD_SERVER && SLI_SI91X_MCU_INTERFACE
-    wfx_power_save(RSI_ACTIVE, HIGH_PERFORMANCE);
-#endif // CHIP_CONFIG_ENABLE_ICD_SERVER && SLI_SI91X_MCU_INTERFACE
-    if (wfx_connect_to_ap() != SL_STATUS_OK)
+    if (ConnectToAccessPoint() != CHIP_NO_ERROR)
     {
-        ChipLogError(DeviceLayer, "wfx_connect_to_ap() failed.");
+        ChipLogError(DeviceLayer, "ConnectToAccessPoint() failed.");
     }
 }
 
 } // namespace
 
-/* Updated functions */
-
 void NotifyIPv6Change(bool gotIPv6Addr)
 {
+    hasNotifiedIPV6 = gotIPv6Addr;
+
     sl_wfx_generic_message_t eventData = {};
     eventData.header.id                = gotIPv6Addr ? to_underlying(WifiEvent::kGotIPv6) : to_underlying(WifiEvent::kLostIP);
     eventData.header.length            = sizeof(eventData.header);
 
     HandleWFXSystemEvent(&eventData);
 }
-
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
 void NotifyIPv4Change(bool gotIPv4Addr)
 {
+    hasNotifiedIPV4 = gotIPv4Addr;
+
     sl_wfx_generic_message_t eventData;
 
     memset(&eventData, 0, sizeof(eventData));
@@ -82,6 +86,7 @@ void NotifyIPv4Change(bool gotIPv4Addr)
     eventData.header.length = sizeof(eventData.header);
     HandleWFXSystemEvent(&eventData);
 }
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
 
 void NotifyDisconnection(WifiDisconnectionReasons reason)
 {
@@ -106,19 +111,31 @@ void NotifyConnection(const MacAddress & ap)
     HandleWFXSystemEvent((sl_wfx_generic_message_t *) &evt);
 }
 
-/* Function to update */
+bool HasNotifiedIPv6Change()
+{
+    return hasNotifiedIPV6;
+}
 
-/***********************************************************************************
- * @fn  sl_matter_wifi_task_started(void)
- * @brief
- *       Wifi device started notification
- * @param[in]: None
- * @return None
- *************************************************************************************/
-void sl_matter_wifi_task_started(void)
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+bool HasNotifiedIPv4Change()
+{
+    return hasNotifiedIPV4;
+}
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
+
+void ResetIPNotificationStates()
+{
+    hasNotifiedIPV6 = false;
+#if (CHIP_DEVICE_CONFIG_ENABLE_IPV4)
+    hasNotifiedIPV4 = false;
+#endif // CHIP_DEVICE_CONFIG_ENABLE_IPV4
+}
+
+void NotifyWifiTaskInitialized(void)
 {
     sl_wfx_startup_ind_t evt = {};
 
+    // TODO: We should move this to the init function and not the notification function
     // Creating a timer which will be used to retry connection with AP
     sRetryTimer = osTimerNew(RetryConnectionTimerHandler, osTimerOnce, NULL, NULL);
     VerifyOrReturn(sRetryTimer != NULL);
@@ -140,16 +157,8 @@ void sl_matter_wifi_task_started(void)
     HandleWFXSystemEvent((sl_wfx_generic_message_t *) &evt);
 }
 
-/**************************************************************************************
- * @fn  void wfx_retry_connection(uint16_t retryAttempt)
- * @brief
- *      During commissioning, we retry to join the network MAX_JOIN_RETRIES_COUNT times.
- *      If DUT is disconnected from the AP or device is power cycled, then retry connection
- *      with AP continously after a certain time interval.
- * @param[in]  retryAttempt
- * @return None
- *************************************************************************************/
-void wfx_retry_connection(uint16_t retryAttempt)
+// TODO: The retry stategy needs to be re-worked
+void ScheduleConnectionAttempt()
 {
     if (retryInterval > kWlanMaxRetryIntervalsInSec)
     {
@@ -159,15 +168,22 @@ void wfx_retry_connection(uint16_t retryAttempt)
     {
         ChipLogProgress(DeviceLayer, "Failed to start retry timer");
         // Sending the join command if retry timer failed to start
-        if (wfx_connect_to_ap() != SL_STATUS_OK)
+        if (ConnectToAccessPoint() != CHIP_NO_ERROR)
         {
-            ChipLogError(DeviceLayer, "wfx_connect_to_ap() failed.");
+            ChipLogError(DeviceLayer, "ConnectToAccessPoint() failed.");
         }
+
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+        //  Remove High performance request before giving up due to a timer start error to save battery life
+        Silabs::WifiSleepManager::GetInstance().RemoveHighPerformanceRequest();
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
         return;
     }
-#if CHIP_CONFIG_ENABLE_ICD_SERVER && SLI_SI91X_MCU_INTERFACE
-    wfx_power_save(RSI_SLEEP_MODE_8, DEEP_SLEEP_WITH_RAM_RETENTION);
-#endif // CHIP_CONFIG_ENABLE_ICD_SERVER && SLI_SI91X_MCU_INTERFACE
-    ChipLogProgress(DeviceLayer, "wfx_retry_connection : Next attempt after %d Seconds", retryInterval);
+
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+    Silabs::WifiSleepManager::GetInstance().RemoveHighPerformanceRequest();
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
+
+    ChipLogProgress(DeviceLayer, "ScheduleConnectionAttempt : Next attempt after %d Seconds", retryInterval);
     retryInterval += retryInterval;
 }
